@@ -1,12 +1,16 @@
 name: Bot PUBG.report
 
+# O agendamento do GitHub ("schedule") e muito irregular: pode passar horas sem rodar.
+# Por isso o bot agora fica ligado em loop por ~5h40, checando a cada 2 minutos,
+# e no fim se religa sozinho. O cron de hora em hora so serve de reserva.
 on:
   schedule:
-    - cron: "*/10 * * * *"   # a cada 10 min (o GitHub pode atrasar alguns minutos)
-  workflow_dispatch:          # botao "Run workflow" para rodar na hora
+    - cron: "17 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: pubg-bot
@@ -15,7 +19,7 @@ concurrency:
 jobs:
   checar:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -26,16 +30,27 @@ jobs:
       - name: Instalar dependencias
         run: pip install requests
 
-      - name: Rodar o bot
+      - name: Rodar o bot em loop (a cada 2 min, por ~5h40)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           PUBG_API_KEY: ${{ secrets.PUBG_API_KEY }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-        run: python pubg_bot.py --uma-vez
-
-      - name: Salvar o que ja foi enviado
         run: |
           git config user.name "pubg-bot"
           git config user.email "pubg-bot@users.noreply.github.com"
-          git add vistos.json jogadores.json
-          git diff --cached --quiet || (git commit -m "estado do bot [skip ci]" && git pull --rebase && git push)
+          fim=$(( $(date +%s) + 340*60 ))
+          while [ "$(date +%s)" -lt "$fim" ]; do
+            python pubg_bot.py --uma-vez || echo "Rodada falhou, tento de novo em 2 min"
+            git add vistos.json jogadores.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "estado do bot [skip ci]"
+              git pull -q --rebase && git push -q || echo "Nao consegui salvar agora, tento na proxima"
+            fi
+            sleep 120
+          done
+
+      - name: Religar o bot
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bot.yml --ref "${{ github.ref_name }}" -R "${{ github.repository }}"
